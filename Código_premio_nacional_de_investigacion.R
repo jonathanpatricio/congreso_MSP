@@ -27,7 +27,6 @@ Personas <- mutate(Personas, key = paste(Personas$Region, #Construyendo una vari
 
 Base <- left_join(x = Adolescentes, y = Personas, by = "key") #Uniendo la tabla Personas con la tabla Adolescentes
 
-
 Vivienda_Hogares <- mutate(Vivienda_Hogares, key_2 = paste(Vivienda_Hogares$Region, #Construyendo una variable llave para hacer la unión con Vivienda_Hogares
                                                        Vivienda_Hogares$HPROVI,
                                                        Vivienda_Hogares$UPM,
@@ -43,8 +42,6 @@ Base <- mutate(Base, key_2 = paste(Base$Region.x, #Construyendo una variable lla
                                  Base$HHOGAR.x,
                                  Base$HVIVI,
                                  sep = "-"))
-
-
 
 Base <- left_join(x = Base, y = Vivienda_Hogares, by = "key_2") #añadiendo la tabla hogares
 
@@ -68,12 +65,14 @@ Base_2 <- mutate(Base_2, # Construyendo la variable sobre uniones tempranas
                  Union_temprana = if_else(condition = Base_2$AD701 == 7, true = 0, 
                                             false = if_else(condition = Base_2$AD701 == 9, true = 0, 
                                                             false = 1)))
+
 Base_2 <- mutate(Base_2, # Constuyendo la variables sobre embarazo--------------
                  Embarazo = if_else(condition = Base_2$AD301 == 1, true = 1, 
                                     false = if_else(condition = Base_2$AD307 == 1, true = 1, 
                                                     false = if_else(condition = Base_2$AD309 == 1, true = 1, 
                                                                     false = if_else(condition = Base_2$AD312 == 1, true = 1, 
                                                                                     false = 0)))))
+
 Base_2 <- mutate(Base_2, 
                  Acceso_salud = if_else(condition = Base_2$AD1004 == 3, true = 1,
                                         false = if_else(condition = Base_2$AD1004 == 4, true = 1, 
