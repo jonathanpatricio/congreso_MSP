@@ -151,6 +151,7 @@ Base_2$Hacinamiento <- relevel(Base_2$Hacinamiento, ref = "No")
 Base_2 <- mutate(Base_2, Zona_residencia = Base_2$HZONA)
 Base_2$Zona_residencia <- factor(Base_2$Zona_residencia, labels = c("urbano", "Rural"))
 
+Base_2$grupsec.x <- factor(Base_2$grupsec.x)
 Base_2$Grupo_medio_bajo <- if_else(condition = Base_2$grupsec.x < 4, true = 1, false = 0)
 
 
@@ -213,3 +214,196 @@ Base_2$Grupo_medio_bajo <- if_else(condition = Base_2$grupsec.x < 4, true = 1, f
   
   
 }#Modelo de asociación (logístico)
+
+{ #Dividiendo la base de datos en data de entrenamiento (80%) y datade prueba (20%)
+  Base_3 <- Base_2 %>% filter(is.na(Nivel_educativo) == FALSE) # Excluyendo las observaciones con datos nulos
+  Base_3 <- Base_3 %>% dplyr::select(Embarazo, Inicio_relaciones, Union_temprana, Uso_anticonceptivos, # Seleccionando las variables de interés
+                                     Acceso_salud, Acceso_educacion, Pertenecer_alguna_religión,
+                                     Tipo_familia, Comunicacion_cuidadores,
+                                     Lugar_ocupa_en_la_familia, Calidad_edu_sex_Info_pubertad,
+                                     Calidad_edu_sex_Charlas,
+                                     Cohesion_con_pares, Nivel_educativo, Buen_manejo_tiempo_libre,
+                                     Edad, Indice_hacinamiento, Hacinamiento, Zona_residencia,
+                                     grupsec.x, Grupo_medio_bajo )
+  
+  
+  Base_3 <- mutate(Base_3, ID = 1:nrow(Base_3))
+  set.seed(16523)
+  Base_entrenamiento <- Base_3 %>% sample_n(size = ceiling(nrow(Base_3)*0.8) , replace=FALSE)
+  base_prueba <- Base_3 %>% filter(!ID %in% Base_entrenamiento$ID)
+  }#Dividiendo la base de datos en data de entrenamiento (80%) y data de prueba (20%)
+
+{
+  #Corriendo el modelo completo
+  Modelo_completo <- glm(formula = Embarazo ~ Inicio_relaciones + Union_temprana + Uso_anticonceptivos +
+                           Acceso_salud  + Pertenecer_alguna_religión +
+                           Tipo_familia  + Comunicacion_cuidadores +
+                           Calidad_edu_sex_Info_pubertad + 
+                           Calidad_edu_sex_Charlas +
+                           Cohesion_con_pares + Edad + Nivel_educativo + Buen_manejo_tiempo_libre +
+                           Indice_hacinamiento + Zona_residencia + factor(grupsec.x),
+                         data = Base_entrenamiento, 
+                         family = binomial(link = "logit"))
+  
+  #Modelo completo con la variable sobre grupo socioeconómica dicotomizado
+  Modelo_completo_2 <- glm(formula = Embarazo ~ Inicio_relaciones + Union_temprana + Uso_anticonceptivos +
+                           Acceso_salud  + Pertenecer_alguna_religión +
+                           Tipo_familia  + Comunicacion_cuidadores +
+                           Calidad_edu_sex_Info_pubertad + 
+                           Calidad_edu_sex_Charlas +
+                           Cohesion_con_pares + Edad + Nivel_educativo + Buen_manejo_tiempo_libre +
+                           Indice_hacinamiento + Zona_residencia + factor(Grupo_medio_bajo),
+                         data = Base_entrenamiento, 
+                         family = binomial(link = "logit"))
+  
+  #Aplicando la estrategia de selección al modelo completo
+  Reducido_back <- stepAIC(Modelo_completo, direction = "backward", trace = TRUE) 
+  
+  #Aplicando la estrategia de selección al modelo completo_2
+  Reducido_back_2 <- stepAIC(Modelo_completo_2, direction = "backward", trace = TRUE)
+  
+  #Visualizando todos los modelos
+  stargazer(Modelo_completo, Modelo_completo_2, Reducido_back,Reducido_back_2, type = "text")
+  
+  #Realizando el LR Test 
+  lrtest(Modelo_completo,Reducido_back) # La variables "acceso_salud" no está siendo significativa en conjunto con las demás. Se evaluará si es una variable de confusión, de lo contrario, para sacarla del modelo
+ 
+  #Se seleccionará el modelo reducido, ya que aparenta ser el más parsimonioso y se realizará el diagnóstico del modelo.
+  
+  # Diagnostico del modelo
+  # Conociendo los valores influyentes
+  x <- (4/(nrow(Base_entrenamiento)-25-1))
+  cook <- as.data.frame(cooks.distance(Reducido_back))
+  cook %>% filter(`cooks.distance(Reducido_back)` > x) %>% summarise(n())
+  plot(Reducido_back,4)
+  outlierTest(Reducido_back) #No se encontraron valores influyentes
+  
+  #Evaluando la multicolinealidad
+  vif(Reducido_back) # No se observan indicios de colinealidad entre las variables seleccionadas en el modelo
+  
+  # Evaluando el supuesto de Linealidad para las variables continuas
+  Base_entrenamiento$fitted <- predict(Reducido_back,type=c("response"))
+  
+  ggplot(Base_entrenamiento,aes(fitted,Edad))+
+    geom_point(size = 0.5,
+               alpha = 0.5) + geom_smooth(method = "loess") + theme_bw()
+  
+  # Evaluando la discriminación y la calibración del modelo de regresión logistica
+  
+  # Prueba de bondad de ajuste
+  logitgof(Base_entrenamiento$Embarazo, fitted(Reducido_back), g = 10, ord=T)
+  
+  # Evaluando la calibración y discriminación del modelo seleccionado
+  base_prueba$Embarazo_num <- as.numeric(base_prueba$Embarazo) 
+  base_prueba$fitted <- predict(Reducido_back, newdata = base_prueba, type=c("response"))
+  
+  cut_point <- cutpointr(base_prueba, # base de datos con la que trabajo
+                         fitted, #variable que guarda las predicciones del modelo
+                         Embarazo_num, # variable dependiente convertida como numérica
+                         direction = ">=", 
+                         pos_class = 2, # valores en mi variable observada un caso positivo
+                         neg_class = 1, # valores en mi variable observada un caso negativo
+                         method = maximize_metric, # Metodo para maximizar (se)
+                         metric = youden) # youden = sensitivity + specificity - 1
+  
+  summary(cut_point)
+  
+  base_prueba$predicciones <- as.factor(if_else(condition = base_prueba$fitted >= cut_point$optimal_cutpoint, true = "Si", false = "No" ))
+  base_prueba$predicciones_num <- as.numeric(if_else(condition = base_prueba$fitted >= cut_point$optimal_cutpoint, true = 1, false = 0 ))
+  
+  # Evaluando la matrix de confusión
+  base_prueba$Embarazo_factor <- factor(base_prueba$Embarazo,labels = c("No","Si"))
+  confusionMatrix(base_prueba$predicciones, base_prueba$Embarazo_factor, positive = "Si")
+  
+  # Curva ROC
+  cut_point$AUC
+  roc <- roc(Embarazo_factor ~ predicciones_num, data = base_prueba)
+  plot(roc)
+  
+  # Reportando el R cuadrado 
+  PseudoR2(Reducido_back, which = "Nagelkerke")
+  
+}# Modelo de regresión logística
+
+{# Red neuronal
+  Base_entrenamiento_neuralnet <- dummy_cols(Base_entrenamiento)
+  Base_entrenamiento_neuralnet <- Base_entrenamiento_neuralnet %>% dplyr::select(Embarazo, `Inicio_relaciones_No ha tenido relaciones`,
+                                                                          `Inicio_relaciones_15 años o menos`, `Inicio_relaciones_Mayor de 15 años`,
+                                                                          Union_temprana_Si, Uso_anticonceptivos_Si, Acceso_salud_Si,
+                                                                          Pertenecer_alguna_religión_Si, Tipo_familia_Monoparental, Tipo_familia_Nuclear,
+                                                                          `Tipo_familia_Nuclear extensa`, Tipo_familia_Otro, Tipo_familia_Unipersonal,
+                                                                          Comunicacion_cuidadores_Si, Calidad_edu_sex_Info_pubertad_Si,
+                                                                          Calidad_edu_sex_Charlas_Si, Cohesion_con_pares_Si,
+                                                                          Edad, `Nivel_educativo_Inicial o Básica`, Nivel_educativo_Secundaria,
+                                                                          Nivel_educativo_Superior, Buen_manejo_tiempo_libre_Si, Hacinamiento_Si,
+                                                                          Zona_residencia_urbano, grupsec.x_1, grupsec.x_2, grupsec.x_3, grupsec.x_4,
+                                                                          grupsec.x_5)
+  
+  #Ajustando la base para correr la red
+  Base_escalada <- data.frame(scale(Base_entrenamiento_neuralnet[,-1]))
+  Base_escalada <- mutate(Base_escalada, Embarazo = Base_entrenamiento_neuralnet$Embarazo)
+  Base_escalada$Embarazo <- factor(Base_escalada$Embarazo, labels = c("No", "Si"))
+  set.seed(6523)
+  Net_1 <- neuralnet(formula = Embarazo ~ .,
+                     data = Base_escalada,
+                     hidden=c(5), 
+                     lifesign = "minimal", 
+                     linear.output = FALSE, 
+                     rep =10)
+  
+  plot(Net_1, rep="best")
+  
+  #Ajustando la base de prueba para correr la red
+  Base_preuba_neuralnet <- dummy_cols(base_prueba)
+  Base_preuba_neuralnet <- Base_preuba_neuralnet %>% dplyr::select(Embarazo, `Inicio_relaciones_No ha tenido relaciones`,
+                                                                   `Inicio_relaciones_15 años o menos`, `Inicio_relaciones_Mayor de 15 años`,
+                                                                   Union_temprana_Si, Uso_anticonceptivos_Si, Acceso_salud_Si,
+                                                                   Pertenecer_alguna_religión_Si, Tipo_familia_Monoparental, Tipo_familia_Nuclear,
+                                                                   `Tipo_familia_Nuclear extensa`, Tipo_familia_Otro, Tipo_familia_Unipersonal,
+                                                                   Comunicacion_cuidadores_Si, Calidad_edu_sex_Info_pubertad_Si,
+                                                                   Calidad_edu_sex_Charlas_Si, Cohesion_con_pares_Si,
+                                                                   Edad, `Nivel_educativo_Inicial o Básica`, Nivel_educativo_Secundaria,
+                                                                   Nivel_educativo_Superior, Buen_manejo_tiempo_libre_Si, Hacinamiento_Si,
+                                                                   Zona_residencia_urbano, grupsec.x_1, grupsec.x_2, grupsec.x_3, grupsec.x_4,
+                                                                   grupsec.x_5)
+  
+  Base_preuba_neuralnet <- rename(Base_preuba_neuralnet, c(`Inicio_relaciones_No ha tenido relaciones` = "Inicio_relaciones_No.ha.tenido.relaciones"))
+  Base_preuba_neuralnet <- rename(Base_preuba_neuralnet, c(`Inicio_relaciones_15 años o menos` = "Inicio_relaciones_15.años.o.menos"))
+  Base_preuba_neuralnet <- rename(Base_preuba_neuralnet, c(`Inicio_relaciones_Mayor de 15 años` = "Inicio_relaciones_Mayor.de.15.años"))
+  Base_preuba_neuralnet <- rename(Base_preuba_neuralnet, c(`Tipo_familia_Nuclear extensa` = "Tipo_familia_Nuclear.extensa"))
+  Base_preuba_neuralnet <- rename(Base_preuba_neuralnet, c(`Nivel_educativo_Inicial o Básica` = "Nivel_educativo_Inicial.o.Básica"))
+  
+  Base_escalada_2 <- data.frame(scale(Base_preuba_neuralnet[,-1]))
+  Base_escalada_2 <- mutate(Base_escalada_2, Embarazo = Base_preuba_neuralnet$Embarazo)
+  Base_escalada_2$Embarazo <- factor(Base_escalada_2$Embarazo, labels = c("No", "Si"))
+  
+  #Punto de corte optimo para las estimaciones de la red red
+  pred <- neuralnet::compute(Net_1,Base_escalada_2)
+  Base_escalada_2$fitted <- pred$net.result[,2]
+  Base_escalada_2$Embarazo_num <- as.numeric(Base_escalada_2$Embarazo) 
+  
+  cut_point_2 <- cutpointr(Base_escalada_2, # base de datos con la que trabajo
+                         fitted, #variable que guarda las predicciones del modelo
+                         Embarazo_num, # variable dependiente convertida como numérica
+                         direction = ">=", 
+                         pos_class = 2, # valores en mi variable observada un caso positivo
+                         neg_class = 1, # valores en mi variable observada un caso negativo
+                         method = maximize_metric, # Metodo para maximizar (se)
+                         metric = youden) # youden = sensitivity + specificity - 1
+  
+  summary(cut_point_2)
+  
+  Base_escalada_2$predicciones <- as.factor(if_else(condition = Base_escalada_2$fitted >= cut_point$optimal_cutpoint, true = "Si", false = "No" ))
+  Base_escalada_2$predicciones_num <- as.numeric(if_else(condition = Base_escalada_2$fitted >= cut_point$optimal_cutpoint, true = 1, false = 0 ))
+  
+  # Evaluando la matrix de confusión
+  Base_escalada_2$Embarazo_factor <- factor(Base_escalada_2$Embarazo,labels = c("No","Si"))
+  confusionMatrix(Base_escalada_2$predicciones, Base_escalada_2$Embarazo_factor, positive = "Si")
+  
+  # Curva ROC
+  cut_point_2$AUC
+  roc <- roc(Embarazo_factor ~ predicciones_num, data = Base_escalada_2)
+  plot(roc)
+  
+  }# Red neuronal
+
